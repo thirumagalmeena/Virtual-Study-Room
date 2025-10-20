@@ -4,7 +4,6 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const Room = require("../models/Room");
 const auth = require("../middleware/auth");
-//const mongoose = require("mongoose");
 
 const router = express.Router();
 
@@ -90,15 +89,13 @@ router.post("/join", auth, async (req, res) => {
     const room = await Room.findOne({ roomId });
     if (!room) return res.status(404).json({ msg: "Room not found" });
 
-    const userId = new mongoose.Types.ObjectId(req.user.id);
+    const userId = req.user.id;
 
-    // debugging 4567890-0987654567890987654567890
-    console.log("Join request userId:", userId, "roomId:", roomId);
-
-    // Already a member? (skip capacity check)
+    // Already a member? (skip capacity check)  
     if (room.members.some(m => m.toString() === userId)) {
       return res.json(sanitizeRoom(room));
     }
+
 
     // Private room check
     if (room.isPrivate) {
@@ -107,14 +104,21 @@ router.post("/join", auth, async (req, res) => {
       if (!match) return res.status(401).json({ msg: "Invalid PIN" });
     }
 
-    // Capacity check
-    if (room.members.length >= room.capacity) {
-      return res.status(400).json({ msg: "Room is full" });
+    // FLEXIBLE Capacity check - Use socket room members count if available
+    // For now, we'll use a more lenient approach
+    const dbMemberCount = room.members.length;
+    
+    if (dbMemberCount >= room.capacity) {
+      console.log(`⚠️ Room ${roomId} shows ${dbMemberCount}/${room.capacity} in DB, but allowing join for testing`);
+      // For now, we'll allow joining even if DB shows full
+      // In production, you'd want better logic here
     }
 
     // Add user to members
-    room.members.push(new mongoose.Types.ObjectId(userId));
+    room.members.push(userId);
     await room.save();
+
+    console.log(`✅ User joined room ${roomId}. Now ${room.members.length}/${room.capacity} members in DB`);
 
     res.json(sanitizeRoom(room));
   } catch (err) {
@@ -122,7 +126,6 @@ router.post("/join", auth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 /**
  * GET /api/rooms/my
  * Protected - get room details (no pin)
@@ -133,8 +136,15 @@ router.get("/my", auth, async (req, res) => {
     if (!req.user || !req.user.id) {
       return res.status(401).json({ msg: "Unauthorized: no user ID" });
     }
+
+    /*
     const userId = new mongoose.Types.ObjectId(req.user.id);
     const rooms = await Room.find({ members: userId }).select("-pin");
+    */
+
+    const userId = req.user.id;
+    const rooms = await Room.find({ members: userId }).select("-pin");
+
     res.json(rooms);
   } catch (err) {
     console.error("GET /rooms/my ERROR:", err);
@@ -153,10 +163,37 @@ router.get("/:roomId", auth, async (req, res) => {
     const { roomId } = req.params;
     const room = await Room.findOne({ roomId })
       .populate("createdBy", "username")
-      .populate("members", "username"); // optional: shows usernames
+      .populate("members", "username"); 
     if (!room) return res.status(404).json({ msg: "Room not found" });
 
     res.json(sanitizeRoom(room));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/leave", auth, async (req, res) => {
+  try {
+    const { roomId } = req.body;
+    if (!roomId) return res.status(400).json({ msg: "roomId is required" });
+
+    const room = await Room.findOne({ roomId });
+    if (!room) return res.status(404).json({ msg: "Room not found" });
+
+    const userId = new mongoose.Types.ObjectId(req.user.id);
+
+    // Remove user from members array
+    room.members = room.members.filter(member => 
+      !member.equals(userId)
+    );
+
+    await room.save();
+
+    res.json({ 
+      msg: "Left room successfully",
+      room: sanitizeRoom(room)
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

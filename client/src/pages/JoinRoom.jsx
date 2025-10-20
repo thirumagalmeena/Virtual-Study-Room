@@ -20,6 +20,7 @@ function JoinRoom() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setSuccess(`Joined room: ${res.data.name}`);
+      // Navigate to room page instead of chat page
       setTimeout(() => navigate(`/room/${res.data.roomId}`), 1000);
     } catch (err) {
       setError(err.response?.data?.msg || "Failed to join room");

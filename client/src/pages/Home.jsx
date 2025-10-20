@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import React, { useState, useEffect } from "react"
 import "../styles/Home.css";
 
 function Home() {
@@ -9,7 +9,6 @@ function Home() {
   const [time, setTime] = useState(getCurrentTime());
   const [rooms, setRooms] = useState([]);
 
-  // Redirect if not logged in
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) {
@@ -17,7 +16,6 @@ function Home() {
     }
   }, [navigate]);
 
-  // Update time every minute
   useEffect(() => {
     const interval = setInterval(() => {
       setTime(getCurrentTime());
@@ -25,7 +23,6 @@ function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch user's rooms
   useEffect(() => {
     const fetchRooms = async () => {
       try {
@@ -133,7 +130,6 @@ function Home() {
           </div>
         </div>
 
-        {/* User rooms section */}
         <div className="your-rooms">
           <h2>Your Rooms</h2>
           {rooms.length === 0 ? (

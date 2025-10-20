@@ -38,7 +38,7 @@ function Login() {
             localStorage.setItem("username", data.user.username);
             setSuccess("Login successful! Redirecting...");
             setTimeout(() => {
-                window.location.href = "/dashboard";
+                window.location.href = "/home";
             }, 1000);
         } catch (err) {
             setError("Something went wrong. Please try again.");

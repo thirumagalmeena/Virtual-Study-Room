@@ -1,21 +1,55 @@
-import { io } from "socket.io-client";
+import { io } from 'socket.io-client';
 
-let socket;
-
-export function initSocket() {
-  if (!socket) {
-    const token = localStorage.getItem("token");
-    const username = localStorage.getItem("username");
-
-    socket = io("http://localhost:5000", {
-      autoConnect: false,
-      transports: ["websocket", "polling"],
-      auth: { token, username },
-    });
+class SocketService {
+  constructor() {
+    this.socket = null;
+    this.isConnected = false;
   }
-  return socket;
+
+  connect() {
+    if (this.socket) return this.socket;
+
+    const token = localStorage.getItem('token');
+    const username = localStorage.getItem('username') || 'User';
+    
+    this.socket = io('http://localhost:5000', {
+      auth: {
+        token: token,
+        username: username
+      }
+    });
+
+    this.socket.on('connect', () => {
+      console.log('Connected to server');
+      this.isConnected = true;
+    });
+
+    this.socket.on('disconnect', () => {
+      console.log('Disconnected from server');
+      this.isConnected = false;
+    });
+
+    this.socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+      this.isConnected = false;
+    });
+
+    return this.socket;
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+      this.isConnected = false;
+    }
+  }
+
+  getSocket() {
+    return this.socket;
+  }
+
+  
 }
 
-export function getSocket() {
-  return socket;
-}
+export default new SocketService();
