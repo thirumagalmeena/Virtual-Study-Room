@@ -23,7 +23,7 @@ const ChatBox = ({ roomId, currentUser }) => {
     const token = localStorage.getItem("token");
     const username = currentUser?.username || localStorage.getItem("username") || "User";
     
-    const newSocket = io("http://localhost:8000", {
+    const newSocket = io("http://localhost:5000", {
       auth: {
         token: token,
         username: username

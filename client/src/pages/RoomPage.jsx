@@ -18,8 +18,23 @@ export default function RoomPage() {
   const [isConnected, setIsConnected] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [showLeaveOptions, setShowLeaveOptions] = useState(false);
+  const [showPermanentLeaveConfirm, setShowPermanentLeaveConfirm] = useState(false);
+  
+  // Pomodoro Timer State
+  const [pomodoroTime, setPomodoroTime] = useState(25 * 60); // Current time in seconds
+  const [isPomodoroActive, setIsPomodoroActive] = useState(false);
+  const [pomodoroMode, setPomodoroMode] = useState('work'); // 'work' or 'break'
+  const [pomodoroCycles, setPomodoroCycles] = useState(0);
+  const [showTimerSettings, setShowTimerSettings] = useState(false);
+  
+  // Customizable Timer Settings
+  const [workDuration, setWorkDuration] = useState(25); // minutes
+  const [breakDuration, setBreakDuration] = useState(5); // minutes
+  
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const pomodoroIntervalRef = useRef(null);
 
   // Scroll to bottom of messages
   const scrollToBottom = () => {
@@ -29,6 +44,89 @@ export default function RoomPage() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Initialize timer with current settings
+  useEffect(() => {
+    setPomodoroTime(workDuration * 60);
+  }, [workDuration]);
+
+  // Pomodoro Timer Effect
+  useEffect(() => {
+    if (isPomodoroActive && pomodoroTime > 0) {
+      pomodoroIntervalRef.current = setInterval(() => {
+        setPomodoroTime((time) => time - 1);
+      }, 1000);
+    } else if (isPomodoroActive && pomodoroTime === 0) {
+      // Timer completed
+      handlePomodoroComplete();
+    }
+
+    return () => {
+      if (pomodoroIntervalRef.current) {
+        clearInterval(pomodoroIntervalRef.current);
+      }
+    };
+  }, [isPomodoroActive, pomodoroTime]);
+
+  const handlePomodoroComplete = () => {
+    if (pomodoroMode === 'work') {
+      setPomodoroCycles(prev => prev + 1);
+      // Switch to break
+      setPomodoroMode('break');
+      setPomodoroTime(breakDuration * 60); // Custom break duration
+      
+      // Show notification
+      if (Notification.permission === 'granted') {
+        new Notification('Pomodoro Complete!', {
+          body: `Time for a ${breakDuration}-minute break!`,
+          icon: '/favicon.ico'
+        });
+      }
+    } else {
+      // Switch back to work
+      setPomodoroMode('work');
+      setPomodoroTime(workDuration * 60); // Custom work duration
+      
+      if (Notification.permission === 'granted') {
+        new Notification('Break Over!', {
+          body: `Time to get back to work for ${workDuration} minutes!`,
+          icon: '/favicon.ico'
+        });
+      }
+    }
+  };
+
+  const startPomodoro = () => {
+    // Request notification permission
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    setIsPomodoroActive(true);
+  };
+
+  const pausePomodoro = () => {
+    setIsPomodoroActive(false);
+  };
+
+  const resetPomodoro = () => {
+    setIsPomodoroActive(false);
+    setPomodoroTime(workDuration * 60);
+    setPomodoroMode('work');
+  };
+
+  const applyTimerSettings = () => {
+    // Reset timer with new settings
+    setIsPomodoroActive(false);
+    setPomodoroTime(workDuration * 60);
+    setPomodoroMode('work');
+    setShowTimerSettings(false);
+  };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // Fetch room data, user info, and message history
   useEffect(() => {
@@ -118,8 +216,8 @@ export default function RoomPage() {
       socketInstance.emit("join_room", { roomCode: roomId });
     });
 
-    socketInstance.on("disconnect", () => {
-      console.log("Disconnected from socket");
+    socketInstance.on("disconnect", (reason) => {
+      console.log("Disconnected from socket:", reason);
       setIsConnected(false);
     });
 
@@ -132,19 +230,39 @@ export default function RoomPage() {
       setRoomMembers(members);
     });
 
-    // Cleanup on unmount
+    // Add reconnection handling
+    socketInstance.on("reconnect", (attemptNumber) => {
+      console.log("Reconnected to socket, attempt:", attemptNumber);
+      setIsConnected(true);
+      // Rejoin the room after reconnection
+      socketInstance.emit("join_room", { roomCode: roomId });
+    });
+
+    socketInstance.on("reconnect_error", (error) => {
+      console.error("Reconnection error:", error);
+    });
+
+    socketInstance.on("reconnect_failed", () => {
+      console.error("Failed to reconnect");
+      setIsConnected(false);
+    });
+
+    // Cleanup on unmount - Only remove event listeners, don't auto-leave room
     return () => {
       socketInstance.off("connect");
       socketInstance.off("disconnect");
       socketInstance.off("receive_message");
       socketInstance.off("room_members");
+      socketInstance.off("reconnect");
+      socketInstance.off("reconnect_error");
+      socketInstance.off("reconnect_failed");
       
-      // Leave room when component unmounts
-      if (socketInstance && isConnected) {
-        socketInstance.emit("leave_room", { roomCode: roomId });
+      // Cleanup pomodoro timer
+      if (pomodoroIntervalRef.current) {
+        clearInterval(pomodoroIntervalRef.current);
       }
     };
-  }, [roomId, isConnected]);
+  }, [roomId]);
 
   const sendMessage = (e) => {
     e.preventDefault();
@@ -159,29 +277,54 @@ export default function RoomPage() {
     }
   };
 
-  const handleLeaveRoom = async () => {
+  // Leave Session - Just navigate away without leaving permanently
+  const handleLeaveSession = () => {
+    console.log("Leaving session temporarily");
+    navigate("/home");
+  };
+
+  // Leave Room Permanently - Remove from room members
+  const handleLeaveRoomPermanently = async () => {
     try {
       // Emit leave room event to socket
       if (socket && isConnected) {
         socket.emit("leave_room", { roomCode: roomId });
       }
 
-      // Also call API to remove from database
+      // Also call API to remove from database room members
       const token = localStorage.getItem("token");
       await API.post("/rooms/leave", 
         { roomId: roomId },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      console.log("Successfully left room in both socket and database");
+      console.log("Successfully left room permanently");
       
       // Navigate back to home
       navigate("/home");
     } catch (err) {
       console.error("Error leaving room:", err);
-      // Still navigate even if API call fails
       navigate("/home");
     }
+  };
+
+  const handleLeaveButtonClick = () => {
+    setShowLeaveOptions(true);
+  };
+
+  const handleCancelLeave = () => {
+    setShowLeaveOptions(false);
+    setShowPermanentLeaveConfirm(false);
+  };
+
+  const handlePermanentLeaveClick = () => {
+    setShowPermanentLeaveConfirm(true);
+  };
+
+  const handleConfirmPermanentLeave = () => {
+    setShowPermanentLeaveConfirm(false);
+    setShowLeaveOptions(false);
+    handleLeaveRoomPermanently();
   };
 
   const handleKeyPress = (e) => {
@@ -287,21 +430,131 @@ export default function RoomPage() {
               </span>
             </div>
           </div>
-          <button 
-            onClick={handleLeaveRoom}
-            style={{ 
-              backgroundColor: "#ff4444", 
-              color: "white", 
-              border: "none", 
-              padding: "10px 20px", 
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "0.9rem",
-              fontWeight: "500"
-            }}
-          >
-            Leave Room
-          </button>
+          
+          {/* Enhanced Leave Options */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            {showPermanentLeaveConfirm ? (
+              <div style={{ 
+                display: "flex", 
+                gap: "10px",
+                backgroundColor: "#fff3cd",
+                padding: "15px",
+                borderRadius: "6px",
+                border: "1px solid #ffeaa7",
+                alignItems: "center"
+              }}>
+                <div style={{ flex: 1 }}>
+                  <strong style={{ color: "#856404" }}>Leave Room Permanently?</strong>
+                  <p style={{ margin: "5px 0 0 0", fontSize: "0.8rem", color: "#856404" }}>
+                    You will be removed from this room and won't be able to rejoin unless invited again.
+                  </p>
+                </div>
+                <button 
+                  onClick={handleConfirmPermanentLeave}
+                  style={{ 
+                    backgroundColor: "#dc3545", 
+                    color: "white", 
+                    border: "none", 
+                    padding: "8px 16px", 
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    fontWeight: "500"
+                  }}
+                >
+                  Yes, Leave
+                </button>
+                <button 
+                  onClick={handleCancelLeave}
+                  style={{ 
+                    backgroundColor: "transparent", 
+                    color: "#6c757d", 
+                    border: "1px solid #6c757d", 
+                    padding: "8px 16px", 
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    fontWeight: "500"
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : showLeaveOptions ? (
+              <div style={{ 
+                display: "flex", 
+                gap: "10px",
+                backgroundColor: "#f8f9fa",
+                padding: "10px",
+                borderRadius: "6px",
+                border: "1px solid #e0e0e0"
+              }}>
+                <button 
+                  onClick={handleLeaveSession}
+                  style={{ 
+                    backgroundColor: "#6c757d", 
+                    color: "white", 
+                    border: "none", 
+                    padding: "8px 16px", 
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    fontWeight: "500"
+                  }}
+                  title="Temporarily leave - you can rejoin later"
+                >
+                  Leave Session
+                </button>
+                <button 
+                  onClick={handlePermanentLeaveClick}
+                  style={{ 
+                    backgroundColor: "#dc3545", 
+                    color: "white", 
+                    border: "none", 
+                    padding: "8px 16px", 
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    fontWeight: "500"
+                  }}
+                  title="Permanently leave this room"
+                >
+                  Leave Room
+                </button>
+                <button 
+                  onClick={handleCancelLeave}
+                  style={{ 
+                    backgroundColor: "transparent", 
+                    color: "#6c757d", 
+                    border: "1px solid #6c757d", 
+                    padding: "8px 16px", 
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    fontWeight: "500"
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={handleLeaveButtonClick}
+                style={{ 
+                  backgroundColor: "#ff4444", 
+                  color: "white", 
+                  border: "none", 
+                  padding: "10px 20px", 
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "0.9rem",
+                  fontWeight: "500"
+                }}
+              >
+                Leave Room
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -346,6 +599,196 @@ export default function RoomPage() {
             gap: "20px",
             minWidth: 0
           }}>
+            {/* Pomodoro Timer */}
+            <div style={{ 
+              backgroundColor: "white", 
+              border: "1px solid #e0e0e0",
+              borderRadius: "8px",
+              padding: "20px",
+              boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+            }}>
+              <h3 style={{ 
+                margin: "0 0 15px 0", 
+                display: "flex", 
+                justifyContent: "space-between", 
+                alignItems: "center" 
+              }}>
+                <span>Pomodoro Timer</span>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <span style={{ 
+                    fontSize: "0.8rem", 
+                    backgroundColor: pomodoroMode === 'work' ? "#e3f2fd" : "#e8f5e8",
+                    color: pomodoroMode === 'work' ? "#1976d2" : "#2e7d32",
+                    padding: "4px 8px",
+                    borderRadius: "12px"
+                  }}>
+                    {pomodoroMode === 'work' ? 'Work Session' : 'Break Time'}
+                  </span>
+                  <button 
+                    onClick={() => setShowTimerSettings(!showTimerSettings)}
+                    style={{ 
+                      backgroundColor: "transparent",
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      padding: "4px 8px",
+                      cursor: "pointer",
+                      fontSize: "0.7rem"
+                    }}
+                    title="Timer Settings"
+                  >
+                    ⚙️
+                  </button>
+                </div>
+              </h3>
+
+              {/* Timer Settings */}
+              {showTimerSettings && (
+                <div style={{ 
+                  backgroundColor: "#f8f9fa",
+                  padding: "15px",
+                  borderRadius: "6px",
+                  marginBottom: "15px",
+                  border: "1px solid #e9ecef"
+                }}>
+                  <h4 style={{ margin: "0 0 10px 0", fontSize: "0.9rem" }}>Timer Settings</h4>
+                  <div style={{ display: "flex", gap: "15px", marginBottom: "10px" }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: "0.8rem", color: "#666", display: "block", marginBottom: "5px" }}>
+                        Work Duration (minutes)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        value={workDuration}
+                        onChange={(e) => setWorkDuration(parseInt(e.target.value) || 1)}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          border: "1px solid #ddd",
+                          borderRadius: "4px",
+                          fontSize: "0.9rem"
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: "0.8rem", color: "#666", display: "block", marginBottom: "5px" }}>
+                        Break Duration (minutes)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="30"
+                        value={breakDuration}
+                        onChange={(e) => setBreakDuration(parseInt(e.target.value) || 1)}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          border: "1px solid #ddd",
+                          borderRadius: "4px",
+                          fontSize: "0.9rem"
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button 
+                      onClick={applyTimerSettings}
+                      style={{ 
+                        backgroundColor: "#007bff",
+                        color: "white",
+                        border: "none",
+                        padding: "6px 12px",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                        fontSize: "0.8rem"
+                      }}
+                    >
+                      Apply Settings
+                    </button>
+                    <button 
+                      onClick={() => setShowTimerSettings(false)}
+                      style={{ 
+                        backgroundColor: "transparent",
+                        color: "#6c757d",
+                        border: "1px solid #6c757d",
+                        padding: "6px 12px",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                        fontSize: "0.8rem"
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              <div style={{ textAlign: "center", marginBottom: "15px" }}>
+                <div style={{ 
+                  fontSize: "2.5rem", 
+                  fontWeight: "bold",
+                  color: pomodoroMode === 'work' ? "#dc3545" : "#28a745",
+                  marginBottom: "10px"
+                }}>
+                  {formatTime(pomodoroTime)}
+                </div>
+                <div style={{ fontSize: "0.8rem", color: "#666", marginBottom: "15px" }}>
+                  Completed Cycles: {pomodoroCycles}
+                  <br />
+                  Current: {workDuration}min work / {breakDuration}min break
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>
+                {!isPomodoroActive ? (
+                  <button 
+                    onClick={startPomodoro}
+                    style={{ 
+                      backgroundColor: "#28a745",
+                      color: "white",
+                      border: "none",
+                      padding: "8px 16px",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      fontSize: "0.9rem"
+                    }}
+                  >
+                    Start Timer
+                  </button>
+                ) : (
+                  <button 
+                    onClick={pausePomodoro}
+                    style={{ 
+                      backgroundColor: "#ffc107",
+                      color: "black",
+                      border: "none",
+                      padding: "8px 16px",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      fontSize: "0.9rem"
+                    }}
+                  >
+                    Pause
+                  </button>
+                )}
+                <button 
+                  onClick={resetPomodoro}
+                  style={{ 
+                    backgroundColor: "#6c757d",
+                    color: "white",
+                    border: "none",
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "0.9rem"
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+
             {/* File Sharing Component */}
             <FileSharing roomCode={roomId} currentUser={currentUser} />
             

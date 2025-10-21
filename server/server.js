@@ -32,10 +32,37 @@ const io = new Server(server, {
     origin: "http://localhost:5173", 
     methods: ["GET", "POST"],
   },
+  // Add better connection settings to match frontend
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // Track room members: { roomCode: [{ userId, username, online }, ...] }
 const roomMembers = {};
+
+// --- MESSAGE ROTATION FUNCTION (Option 2) ---
+const rotateRoomMessages = async (roomCode, maxMessages = 1000) => {
+  try {
+    const messageCount = await Message.countDocuments({ roomCode });
+    
+    if (messageCount > maxMessages) {
+      const messagesToDelete = messageCount - maxMessages;
+      const oldestMessages = await Message.find({ roomCode })
+        .sort({ createdAt: 1 })
+        .limit(messagesToDelete)
+        .select('_id');
+      
+      if (oldestMessages.length > 0) {
+        await Message.deleteMany({ 
+          _id: { $in: oldestMessages.map(m => m._id) } 
+        });
+        console.log(`🧹 Rotated ${oldestMessages.length} messages from ${roomCode}`);
+      }
+    }
+  } catch (err) {
+    console.error('Message rotation error:', err);
+  }
+};
 
 // --- Attach Socket.IO middleware for auth ---
 io.use((socket, next) => {
@@ -62,6 +89,15 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   console.log(`User connected: ${socket.user.username} (ID: ${socket.user.id})`);
+
+  // Add reconnection event handlers to match frontend
+  socket.on("reconnect", (attemptNumber) => {
+    console.log(`🔄 User ${socket.user.username} reconnected (attempt ${attemptNumber})`);
+  });
+
+  socket.on("reconnect_attempt", (attemptNumber) => {
+    console.log(`🔄 Reconnection attempt ${attemptNumber} for ${socket.user.username}`);
+  });
 
 socket.on("join_room", async ({ roomCode }) => {
   if (!socket.rooms.has(roomCode)) {
@@ -98,6 +134,9 @@ socket.on("join_room", async ({ roomCode }) => {
           type: "system"
         });
         await systemMessage.save();
+        
+        // Rotate messages after saving system message
+        await rotateRoomMessages(roomCode, 1000);
       } catch (err) {
         console.error("Error saving system message:", err);
       }
@@ -126,7 +165,7 @@ socket.on("join_room", async ({ roomCode }) => {
   }
 });
 
-  // Updated send_message to save messages to database
+  // Updated send_message with message rotation
   socket.on("send_message", async ({ roomCode, text }) => {
     try {
       const msgData = {
@@ -147,6 +186,9 @@ socket.on("join_room", async ({ roomCode }) => {
       });
       
       await savedMessage.save();
+      
+      // ROTATE MESSAGES: Keep only latest 1000 messages per room
+      await rotateRoomMessages(roomCode, 1000);
       
       // Broadcast message to all in the room including sender
       io.to(roomCode).emit("receive_message", msgData);
@@ -190,6 +232,9 @@ socket.on("leave_room", async ({ roomCode }) => {
             type: "system"
           });
           await systemMessage.save();
+          
+          // Rotate messages after saving system message
+          await rotateRoomMessages(roomCode, 1000);
         } catch (err) {
           console.error("Error saving leave message:", err);
         }
@@ -233,8 +278,10 @@ socket.on("disconnect", async (reason) => {
     if (memberIndex !== -1) {
       const disconnectedUser = roomMembers[roomCode][memberIndex];
       
-      // Remove user from socket room
-      roomMembers[roomCode].splice(memberIndex, 1);
+      // Mark user as offline instead of removing completely
+      // This allows them to reconnect without leaving the room permanently
+      roomMembers[roomCode][memberIndex].online = false;
+      roomMembers[roomCode][memberIndex].socketId = null;
       
       console.log(`🔴 User ${disconnectedUser.username} DISCONNECTED from room ${roomCode}`);
 
@@ -248,6 +295,9 @@ socket.on("disconnect", async (reason) => {
           type: "system"
         });
         await systemMessage.save();
+        
+        // Rotate messages after saving system message
+        await rotateRoomMessages(roomCode, 1000);
       } catch (err) {
         console.error("Error saving disconnect message:", err);
       }
@@ -260,14 +310,11 @@ socket.on("disconnect", async (reason) => {
         type: "system"
       });
 
-      // Send updated member list
+      // Send updated member list to show user as offline
       io.to(roomCode).emit("room_members", roomMembers[roomCode]);
 
-      // Clean up empty rooms
-      if (roomMembers[roomCode].length === 0) {
-        delete roomMembers[roomCode];
-        console.log(`🧹 Room ${roomCode} cleaned up after disconnect`);
-      }
+      // Don't clean up empty rooms immediately on disconnect
+      // Wait for explicit leave_room event
     }
   }
 });
