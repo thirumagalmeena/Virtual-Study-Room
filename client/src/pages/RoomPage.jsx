@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import API from "../services/api";
 import socketService from "../services/socket";
+import FileSharing from "../components/FileSharing";
 
 export default function RoomPage() {
   const { roomId } = useParams();
@@ -15,7 +16,10 @@ export default function RoomPage() {
   const [newMessage, setNewMessage] = useState("");
   const [roomMembers, setRoomMembers] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
 
   // Scroll to bottom of messages
   const scrollToBottom = () => {
@@ -26,15 +30,20 @@ export default function RoomPage() {
     scrollToBottom();
   }, [messages]);
 
-  // Fetch room data and user info
+  // Fetch room data, user info, and message history
   useEffect(() => {
     const fetchRoomAndUser = async () => {
       try {
         const token = localStorage.getItem("token");
-        const res = await API.get(`/rooms/${roomId}`, {
+        
+        // Fetch room data
+        const roomRes = await API.get(`/rooms/${roomId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        setRoom(res.data);
+        setRoom(roomRes.data);
+
+        // Fetch message history
+        await fetchMessageHistory();
 
         // Get current user info
         const userData = JSON.parse(localStorage.getItem("user") || "{}");
@@ -50,6 +59,50 @@ export default function RoomPage() {
     };
     fetchRoomAndUser();
   }, [roomId]);
+
+  // Fetch message history
+  const fetchMessageHistory = async (beforeTimestamp = null) => {
+    try {
+      setLoadingHistory(true);
+      
+      const params = { limit: 50 };
+      if (beforeTimestamp) {
+        params.before = beforeTimestamp;
+      }
+      
+      const response = await API.get(`/messages/room/${roomId}`, { params });
+      
+      if (beforeTimestamp) {
+        // Append older messages at the beginning
+        setMessages(prev => [...response.data.messages, ...prev]);
+      } else {
+        // Replace messages (initial load)
+        setMessages(response.data.messages);
+      }
+      
+      setHasMoreMessages(response.data.hasMore);
+      
+      // Scroll to bottom only on initial load
+      if (!beforeTimestamp) {
+        setTimeout(scrollToBottom, 100);
+      }
+    } catch (error) {
+      console.error("Error fetching message history:", error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // Load more messages when scrolling to top
+  const handleScroll = () => {
+    const container = messagesContainerRef.current;
+    if (container && container.scrollTop === 0 && hasMoreMessages && !loadingHistory) {
+      const oldestMessage = messages[0];
+      if (oldestMessage) {
+        fetchMessageHistory(oldestMessage.createdAt);
+      }
+    }
+  };
 
   // Socket connection and event handlers
   useEffect(() => {
@@ -79,32 +132,12 @@ export default function RoomPage() {
       setRoomMembers(members);
     });
 
-    socketInstance.on("user_joined", (data) => {
-      setMessages(prev => [...prev, {
-        author: "System",
-        text: `${data.username} joined the room`,
-        time: new Date().toLocaleTimeString(),
-        type: "system"
-      }]);
-    });
-
-    socketInstance.on("user_left", (data) => {
-      setMessages(prev => [...prev, {
-        author: "System",
-        text: `${data.username} left the room`,
-        time: new Date().toLocaleTimeString(),
-        type: "system"
-      }]);
-    });
-
     // Cleanup on unmount
     return () => {
       socketInstance.off("connect");
       socketInstance.off("disconnect");
       socketInstance.off("receive_message");
       socketInstance.off("room_members");
-      socketInstance.off("user_joined");
-      socketInstance.off("user_left");
       
       // Leave room when component unmounts
       if (socketInstance && isConnected) {
@@ -126,36 +159,70 @@ export default function RoomPage() {
     }
   };
 
-const handleLeaveRoom = async () => {
-  try {
-    // Emit leave room event to socket
-    if (socket && isConnected) {
-      socket.emit("leave_room", { roomCode: roomId });
+  const handleLeaveRoom = async () => {
+    try {
+      // Emit leave room event to socket
+      if (socket && isConnected) {
+        socket.emit("leave_room", { roomCode: roomId });
+      }
+
+      // Also call API to remove from database
+      const token = localStorage.getItem("token");
+      await API.post("/rooms/leave", 
+        { roomId: roomId },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      console.log("Successfully left room in both socket and database");
+      
+      // Navigate back to home
+      navigate("/home");
+    } catch (err) {
+      console.error("Error leaving room:", err);
+      // Still navigate even if API call fails
+      navigate("/home");
     }
-
-    // Also call API to remove from database
-    const token = localStorage.getItem("token");
-    await API.post("/rooms/leave", 
-      { roomId: roomId },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-
-    console.log("Successfully left room in both socket and database");
-    
-    // Navigate back to home
-    navigate("/home");
-  } catch (err) {
-    console.error("Error leaving room:", err);
-    // Still navigate even if API call fails
-    navigate("/home");
-  }
-};
+  };
 
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage(e);
     }
+  };
+
+  // Format message timestamp
+  const formatMessageTime = (timestamp) => {
+    if (!timestamp) return "";
+    
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInHours = (now - date) / (1000 * 60 * 60);
+    
+    if (diffInHours < 24) {
+      // Today - show time only
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else {
+      // Older than 24 hours - show date and time
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+  };
+
+  // Check if messages should be grouped
+  const shouldGroupMessages = (currentMsg, previousMsg) => {
+    if (!previousMsg || currentMsg.type === "system" || previousMsg.type === "system") {
+      return false;
+    }
+    
+    if (currentMsg.userId !== previousMsg.userId) {
+      return false;
+    }
+    
+    const currentTime = new Date(currentMsg.timestamp || currentMsg.createdAt);
+    const previousTime = new Date(previousMsg.timestamp || previousMsg.createdAt);
+    const timeDiff = (currentTime - previousTime) / (1000 * 60); // Difference in minutes
+    
+    return timeDiff < 5; // Group if less than 5 minutes apart
   };
 
   if (loading) return (
@@ -208,6 +275,7 @@ const handleLeaveRoom = async () => {
             <p style={{ margin: "0 0 12px 0", color: "#666" }}>{room.description}</p>
             <div style={{ fontSize: "0.9rem", color: "#888" }}>
               Room ID: <strong>{room.roomId}</strong> • 
+              Messages: <strong>{messages.length}</strong> • 
               Capacity: {roomMembers.filter(m => m.online).length}/{room.capacity} • 
               {room.isPrivate ? " Private Room" : " Public Room"} •
               <span style={{ 
@@ -244,7 +312,7 @@ const handleLeaveRoom = async () => {
         gap: "20px",
         minHeight: 0
       }}>
-        {/* Video & Notes Area */}
+        {/* Left Column - Video, Files & Notes */}
         <div style={{ 
           flex: 3, 
           display: "flex", 
@@ -270,38 +338,49 @@ const handleLeaveRoom = async () => {
             </div>
           </div>
 
-          {/* Shared Notes Area */}
+          {/* File Sharing & Notes Area */}
           <div style={{ 
             flex: 1,
-            backgroundColor: "white", 
-            border: "1px solid #e0e0e0",
-            borderRadius: "8px",
-            padding: "20px",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+            display: "flex",
+            flexDirection: "column",
+            gap: "20px",
+            minWidth: 0
           }}>
-            <h3 style={{ margin: "0 0 15px 0" }}>Shared Notes</h3>
-            <textarea
-              placeholder="Start taking shared notes... (Feature in development)"
-              style={{
-                width: "100%",
-                height: "120px",
-                padding: "12px",
-                border: "1px solid #e0e0e0",
-                borderRadius: "4px",
-                resize: "vertical",
-                fontSize: "0.9rem",
-                fontFamily: "inherit"
-              }}
-              disabled
-            />
-            <p style={{ 
-              fontSize: "0.8rem", 
-              color: "#999", 
-              marginTop: "8px",
-              fontStyle: "italic"
+            {/* File Sharing Component */}
+            <FileSharing roomCode={roomId} currentUser={currentUser} />
+            
+            {/* Shared Notes Area */}
+            <div style={{ 
+              backgroundColor: "white", 
+              border: "1px solid #e0e0e0",
+              borderRadius: "8px",
+              padding: "20px",
+              boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
             }}>
-              Collaborative notes feature coming soon
-            </p>
+              <h3 style={{ margin: "0 0 15px 0" }}>Shared Notes</h3>
+              <textarea
+                placeholder="Start taking shared notes... (Feature in development)"
+                style={{
+                  width: "100%",
+                  height: "120px",
+                  padding: "12px",
+                  border: "1px solid #e0e0e0",
+                  borderRadius: "4px",
+                  resize: "vertical",
+                  fontSize: "0.9rem",
+                  fontFamily: "inherit"
+                }}
+                disabled
+              />
+              <p style={{ 
+                fontSize: "0.8rem", 
+                color: "#999", 
+                marginTop: "8px",
+                fontStyle: "italic"
+              }}>
+                Collaborative notes feature coming soon
+              </p>
+            </div>
           </div>
         </div>
 
@@ -344,21 +423,37 @@ const handleLeaveRoom = async () => {
                   marginRight: "6px"
                 }}></div>
                 <span>
-                  {roomMembers.filter(m => m.online).length} online • {roomMembers.length} total
+                  {roomMembers.filter(m => m.online).length} online • {roomMembers.length} total • {messages.length} messages
                 </span>
               </div>
             </div>
 
             {/* Messages Area */}
-            <div style={{ 
-              flex: 1,
-              padding: "15px",
-              overflowY: "auto",
-              backgroundColor: "#fafafa",
-              display: "flex",
-              flexDirection: "column"
-            }}>
-              {messages.length === 0 ? (
+            <div 
+              ref={messagesContainerRef}
+              onScroll={handleScroll}
+              style={{ 
+                flex: 1,
+                padding: "15px",
+                overflowY: "auto",
+                backgroundColor: "#fafafa",
+                display: "flex",
+                flexDirection: "column"
+              }}
+            >
+              {/* Loading indicator for message history */}
+              {loadingHistory && (
+                <div style={{ 
+                  textAlign: "center", 
+                  color: "#666",
+                  padding: "10px",
+                  fontSize: "0.9rem"
+                }}>
+                  Loading older messages...
+                </div>
+              )}
+
+              {messages.length === 0 && !loadingHistory ? (
                 <div style={{ 
                   textAlign: "center", 
                   color: "#999",
@@ -372,60 +467,68 @@ const handleLeaveRoom = async () => {
                   {isConnected ? "No messages yet. Start the conversation!" : "Connecting to chat..."}
                 </div>
               ) : (
-                messages.map((msg, index) => (
-                  <div 
-                    key={index} 
-                    style={{ 
-                      marginBottom: "12px",
-                    }}
-                  >
-                    {msg.author === "System" ? (
-                      <div style={{ 
-                        textAlign: "center",
-                        margin: "8px 0"
-                      }}>
-                        <span style={{
-                          backgroundColor: "#e3f2fd",
-                          color: "#1976d2",
-                          padding: "4px 12px",
-                          borderRadius: "12px",
-                          fontSize: "0.8rem",
-                          fontStyle: "italic"
-                        }}>
-                          {msg.text}
-                        </span>
-                      </div>
-                    ) : (
-                      <div style={{ 
-                        display: "flex",
-                        flexDirection: "column",
-                        maxWidth: "80%",
-                        marginLeft: msg.author === currentUser?.username ? "auto" : "0"
-                      }}>
+                messages.map((msg, index) => {
+                  const previousMsg = messages[index - 1];
+                  const isGrouped = shouldGroupMessages(msg, previousMsg);
+                  
+                  return (
+                    <div 
+                      key={msg._id || index} 
+                      style={{ 
+                        marginBottom: isGrouped ? "2px" : "12px",
+                      }}
+                    >
+                      {msg.type === "system" ? (
                         <div style={{ 
-                          display: "flex", 
-                          justifyContent: "space-between",
-                          fontSize: "0.75rem",
-                          color: "#666",
-                          marginBottom: "2px",
-                          padding: "0 8px"
+                          textAlign: "center",
+                          margin: "8px 0"
                         }}>
-                          <strong>{msg.author}</strong>
-                          <span>{msg.time}</span>
+                          <span style={{
+                            backgroundColor: "#e3f2fd",
+                            color: "#1976d2",
+                            padding: "4px 12px",
+                            borderRadius: "12px",
+                            fontSize: "0.8rem",
+                            fontStyle: "italic"
+                          }}>
+                            {msg.text}
+                          </span>
                         </div>
+                      ) : (
                         <div style={{ 
-                          backgroundColor: msg.author === currentUser?.username ? "#007bff" : "#f0f0f0",
-                          color: msg.author === currentUser?.username ? "white" : "black",
-                          padding: "8px 12px",
-                          borderRadius: "12px",
-                          wordWrap: "break-word"
+                          display: "flex",
+                          flexDirection: "column",
+                          maxWidth: "80%",
+                          marginLeft: msg.userId === currentUser?.id ? "auto" : "0"
                         }}>
-                          {msg.text}
+                          {!isGrouped && (
+                            <div style={{ 
+                              display: "flex", 
+                              justifyContent: "space-between",
+                              fontSize: "0.75rem",
+                              color: "#666",
+                              marginBottom: "2px",
+                              padding: "0 8px"
+                            }}>
+                              <strong>{msg.author}</strong>
+                              <span>{formatMessageTime(msg.timestamp || msg.createdAt)}</span>
+                            </div>
+                          )}
+                          <div style={{ 
+                            backgroundColor: msg.userId === currentUser?.id ? "#007bff" : "#f0f0f0",
+                            color: msg.userId === currentUser?.id ? "white" : "black",
+                            padding: isGrouped ? "4px 12px" : "8px 12px",
+                            borderRadius: "12px",
+                            wordWrap: "break-word",
+                            marginTop: isGrouped ? "0" : "4px"
+                          }}>
+                            {msg.text}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                ))
+                      )}
+                    </div>
+                  );
+                })
               )}
               <div ref={messagesEndRef} />
             </div>

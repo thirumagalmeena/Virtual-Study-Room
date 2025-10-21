@@ -5,6 +5,7 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const Message = require("./models/Message");
 
 dotenv.config();
 
@@ -62,7 +63,7 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   console.log(`User connected: ${socket.user.username} (ID: ${socket.user.id})`);
 
-socket.on("join_room", ({ roomCode }) => {
+socket.on("join_room", async ({ roomCode }) => {
   if (!socket.rooms.has(roomCode)) {
     socket.join(roomCode);
     
@@ -86,6 +87,21 @@ socket.on("join_room", ({ roomCode }) => {
       });
 
       console.log(`✅ User ${socket.user.username} JOINED room ${roomCode}`);
+      
+      // Save system message for new joins
+      try {
+        const systemMessage = new Message({
+          roomCode: roomCode,
+          author: "System",
+          userId: "system",
+          text: `${socket.user.username} joined the room`,
+          type: "system"
+        });
+        await systemMessage.save();
+      } catch (err) {
+        console.error("Error saving system message:", err);
+      }
+      
     } else {
       // Update existing user to online
       roomMembers[roomCode][existingMemberIndex].online = true;
@@ -110,19 +126,43 @@ socket.on("join_room", ({ roomCode }) => {
   }
 });
 
-  socket.on("send_message", ({ roomCode, text }) => {
-    const msg = {
-      author: socket.user.username,
-      text: text.trim(),
-      time: new Date().toLocaleTimeString(),
-      userId: socket.user.id,
-      timestamp: new Date()
-    };
-    
-    // Broadcast message to all in the room including sender
-    io.to(roomCode).emit("receive_message", msg);
-    
-    console.log(`Message from ${socket.user.username} in ${roomCode}: ${text}`);
+  // Updated send_message to save messages to database
+  socket.on("send_message", async ({ roomCode, text }) => {
+    try {
+      const msgData = {
+        author: socket.user.username,
+        text: text.trim(),
+        time: new Date().toLocaleTimeString(),
+        userId: socket.user.id,
+        timestamp: new Date()
+      };
+      
+      // Save message to database
+      const savedMessage = new Message({
+        roomCode: roomCode,
+        author: socket.user.username,
+        userId: socket.user.id,
+        text: text.trim(),
+        type: "user"
+      });
+      
+      await savedMessage.save();
+      
+      // Broadcast message to all in the room including sender
+      io.to(roomCode).emit("receive_message", msgData);
+      
+      console.log(`Message from ${socket.user.username} in ${roomCode}: ${text}`);
+    } catch (err) {
+      console.error("Error saving message:", err);
+      // Still emit the message even if save fails
+      io.to(roomCode).emit("receive_message", {
+        author: socket.user.username,
+        text: text.trim(),
+        time: new Date().toLocaleTimeString(),
+        userId: socket.user.id,
+        timestamp: new Date()
+      });
+    }
   });
 
 socket.on("leave_room", async ({ roomCode }) => {
@@ -139,6 +179,20 @@ socket.on("leave_room", async ({ roomCode }) => {
         const leftUser = roomMembers[roomCode].splice(memberIndex, 1)[0];
         
         console.log(`❌ User ${leftUser.username} LEFT room ${roomCode}`);
+
+        // Save system message for user leaving
+        try {
+          const systemMessage = new Message({
+            roomCode: roomCode,
+            author: "System",
+            userId: "system",
+            text: `${leftUser.username} left the room`,
+            type: "system"
+          });
+          await systemMessage.save();
+        } catch (err) {
+          console.error("Error saving leave message:", err);
+        }
 
         // Emit system message
         socket.to(roomCode).emit("receive_message", {
@@ -159,8 +213,6 @@ socket.on("leave_room", async ({ roomCode }) => {
       }
     }
 
-    // Also remove from database (optional but recommended)
-    // You can call your API here or let the client handle it
     console.log(`User ${socket.user.username} left room ${roomCode} - socket only`);
     
   } catch (err) {
@@ -168,7 +220,7 @@ socket.on("leave_room", async ({ roomCode }) => {
   }
 });
 
-// UPDATE the disconnect handler to also remove from database:
+// UPDATE the disconnect handler to save system messages
 socket.on("disconnect", async (reason) => {
   console.log(`📵 User disconnected: ${socket.user.username} (${reason})`);
 
@@ -185,6 +237,20 @@ socket.on("disconnect", async (reason) => {
       roomMembers[roomCode].splice(memberIndex, 1);
       
       console.log(`🔴 User ${disconnectedUser.username} DISCONNECTED from room ${roomCode}`);
+
+      // Save system message for disconnect
+      try {
+        const systemMessage = new Message({
+          roomCode: roomCode,
+          author: "System",
+          userId: "system",
+          text: `${disconnectedUser.username} disconnected`,
+          type: "system"
+        });
+        await systemMessage.save();
+      } catch (err) {
+        console.error("Error saving disconnect message:", err);
+      }
 
       // Notify room
       socket.to(roomCode).emit("receive_message", {
@@ -223,43 +289,22 @@ socket.on("disconnect", async (reason) => {
     });
   });
 
-  // Handle user disconnecting (closing tab/browser)
-socket.on("disconnect", (reason) => {
-  console.log(`📵 User disconnected: ${socket.user.username} (${reason})`);
+  // File sharing socket events
+  socket.on("file_uploaded", ({ roomCode, file }) => {
+    // Broadcast to all room members except sender
+    socket.to(roomCode).emit("new_file", {
+      file,
+      uploadedBy: socket.user.username,
+      message: `${socket.user.username} shared a file: ${file.originalName}`
+    });
+  });
 
-  // Remove user from all rooms they were in
-  for (const roomCode in roomMembers) {
-    const memberIndex = roomMembers[roomCode].findIndex(
-      (m) => m.socketId === socket.id
-    );
-
-    if (memberIndex !== -1) {
-      const disconnectedUser = roomMembers[roomCode][memberIndex];
-      
-      // Remove user from room
-      roomMembers[roomCode].splice(memberIndex, 1);
-      
-      console.log(`🔴 User ${disconnectedUser.username} DISCONNECTED from room ${roomCode}`);
-
-      // Notify room
-      socket.to(roomCode).emit("receive_message", {
-        author: "System",
-        text: `${disconnectedUser.username} disconnected`,
-        time: new Date().toLocaleTimeString(),
-        type: "system"
-      });
-
-      // Send updated member list
-      io.to(roomCode).emit("room_members", roomMembers[roomCode]);
-
-      // Clean up empty rooms
-      if (roomMembers[roomCode].length === 0) {
-        delete roomMembers[roomCode];
-        console.log(`🧹 Room ${roomCode} cleaned up after disconnect`);
-      }
-    }
-  }
-});
+  socket.on("file_deleted", ({ roomCode, fileId }) => {
+    socket.to(roomCode).emit("file_removed", {
+      fileId,
+      deletedBy: socket.user.username
+    });
+  });
 
   // Error handling
   socket.on("error", (error) => {
@@ -274,11 +319,16 @@ app.use("/api/auth", authRoutes);
 const roomsRoutes = require("./routes/rooms");
 app.use("/api/rooms", roomsRoutes);
 
-/*
+// File sharing routes
 const filesRoutes = require("./routes/files");
 app.use("/api/files", filesRoutes);
-app.use("/uploads", express.static("uploads")); // Serve uploaded files statically
-*/
+
+// Message history routes
+const messagesRoutes = require("./routes/messages");
+app.use("/api/messages", messagesRoutes);
+
+// Serve uploaded files statically
+app.use("/uploads", express.static("uploads"));
 
 // Optional: Add endpoint to get room stats (for debugging)
 app.get("/api/room-stats", (req, res) => {
