@@ -1,353 +1,178 @@
-import React, { useState, useEffect, useRef } from "react";
-import io from "socket.io-client";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import API from "../services/api";
+import "../styles/CreateRoom.css";
 
-const ChatBox = ({ roomId, currentUser }) => {
-  const [socket, setSocket] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState("");
-  const [roomMembers, setRoomMembers] = useState([]);
-  const [isConnected, setIsConnected] = useState(false);
-  const messagesEndRef = useRef(null);
+function CreateRoom() {
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    isPrivate: false,
+    pin: "",
+    capacity: 10,
+  });
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  // Scroll to bottom of messages
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData({
+      ...formData,
+      [name]: type === "checkbox" ? checked : value,
+    });
+    setError("");
+    setSuccess("");
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  // Socket connection and event handlers
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    const username = currentUser?.username || localStorage.getItem("username") || "User";
-    
-    const newSocket = io("http://localhost:5000", {
-      auth: {
-        token: token,
-        username: username
-      }
-    });
-
-    newSocket.on("connect", () => {
-      console.log("Connected to socket");
-      setIsConnected(true);
-      newSocket.emit("join_room", { roomCode: roomId });
-    });
-
-    newSocket.on("disconnect", () => {
-      console.log("Disconnected from socket");
-      setIsConnected(false);
-    });
-
-    newSocket.on("receive_message", (msg) => {
-      setMessages(prev => [...prev, msg]);
-    });
-
-    newSocket.on("room_members", (members) => {
-      setRoomMembers(members);
-    });
-
-    newSocket.on("user_joined", (data) => {
-      setMessages(prev => [...prev, {
-        author: "System",
-        text: `${data.username} joined the room`,
-        time: new Date().toLocaleTimeString(),
-        type: "system"
-      }]);
-    });
-
-    newSocket.on("user_left", (data) => {
-      setMessages(prev => [...prev, {
-        author: "System",
-        text: `${data.username} left the room`,
-        time: new Date().toLocaleTimeString(),
-        type: "system"
-      }]);
-    });
-
-    setSocket(newSocket);
-
-    // Cleanup on unmount
-    return () => {
-      newSocket.disconnect();
-    };
-  }, [roomId, currentUser]);
-
-  const sendMessage = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (newMessage.trim() && socket) {
-      socket.emit("send_message", {
-        roomCode: roomId,
-        text: newMessage.trim()
+    try {
+      const token = localStorage.getItem("token");
+      const res = await API.post("/rooms/create", formData, {
+        headers: { Authorization: `Bearer ${token}` },
       });
-      setNewMessage("");
+      setSuccess(`Room created! ID: ${res.data.roomId}`);
+      setTimeout(() => navigate(`/room/${res.data.roomId}`), 1000);
+    } catch (err) {
+      setError(err.response?.data?.msg || "Failed to create room");
     }
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage(e);
-    }
-  };
-
-  const formatTime = (timeString) => {
-    return timeString;
-  };
-
-  const isSystemMessage = (message) => {
-    return message.author === "System" || message.type === "system";
   };
 
   return (
-    <div style={{ 
-      display: "flex", 
-      flexDirection: "column",
-      height: "100%",
-      border: "1px solid #e0e0e0",
-      borderRadius: "8px",
-      backgroundColor: "white",
-      overflow: "hidden"
-    }}>
-      {/* Chat Header */}
-      <div style={{ 
-        padding: "15px 20px",
-        borderBottom: "1px solid #e0e0e0",
-        backgroundColor: "#f8f9fa",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center"
-      }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Chat</h3>
-          <div style={{ 
-            display: "flex", 
-            alignItems: "center", 
-            fontSize: "0.8rem",
-            color: "#666",
-            marginTop: "4px"
-          }}>
-            <div style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              backgroundColor: isConnected ? "#4CAF50" : "#ff4444",
-              marginRight: "6px"
-            }}></div>
-            <span>
-              {roomMembers.filter(m => m.online).length} online • {roomMembers.length} total
-            </span>
-          </div>
-        </div>
+    <div className="studyroom-container">
+      <div className="studyroom-background">
+        <div className="floating-element element-1"></div>
+        <div className="floating-element element-2"></div>
+        <div className="floating-element element-3"></div>
       </div>
-
-      {/* Main Content Area */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Messages Area */}
-        <div style={{ 
-          flex: 3,
-          display: "flex", 
-          flexDirection: "column",
-          minWidth: 0 // Important for flexbox text overflow
-        }}>
-          {/* Messages Container */}
-          <div style={{ 
-            flex: 1,
-            padding: "15px",
-            overflowY: "auto",
-            backgroundColor: "#fafafa"
-          }}>
-            {messages.length === 0 ? (
-              <div style={{ 
-                textAlign: "center", 
-                color: "#999",
-                fontStyle: "italic",
-                marginTop: "20px"
-              }}>
-                No messages yet. Start the conversation!
-              </div>
-            ) : (
-              messages.map((msg, index) => (
-                <div 
-                  key={index} 
-                  style={{ 
-                    marginBottom: "12px",
-                    animation: "fadeIn 0.3s ease-in"
-                  }}
-                >
-                  {isSystemMessage(msg) ? (
-                    // System message
-                    <div style={{ 
-                      textAlign: "center",
-                      margin: "8px 0"
-                    }}>
-                      <span style={{
-                        backgroundColor: "#e3f2fd",
-                        color: "#1976d2",
-                        padding: "4px 12px",
-                        borderRadius: "12px",
-                        fontSize: "0.8rem",
-                        fontStyle: "italic"
-                      }}>
-                        {msg.text}
-                      </span>
-                    </div>
-                  ) : (
-                    // User message
-                    <div style={{ 
-                      display: "flex",
-                      flexDirection: "column",
-                      maxWidth: "80%",
-                      marginLeft: msg.author === currentUser?.username ? "auto" : "0"
-                    }}>
-                      <div style={{ 
-                        display: "flex", 
-                        justifyContent: "space-between",
-                        fontSize: "0.75rem",
-                        color: "#666",
-                        marginBottom: "2px",
-                        padding: "0 8px"
-                      }}>
-                        <strong>{msg.author}</strong>
-                        <span>{formatTime(msg.time)}</span>
-                      </div>
-                      <div style={{ 
-                        backgroundColor: msg.author === currentUser?.username ? "#007bff" : "#f0f0f0",
-                        color: msg.author === currentUser?.username ? "white" : "black",
-                        padding: "8px 12px",
-                        borderRadius: "12px",
-                        wordWrap: "break-word",
-                        border: msg.author === currentUser?.username ? "none" : "1px solid #e0e0e0"
-                      }}>
-                        {msg.text}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-            <div ref={messagesEndRef} />
+      
+      <div className="studyroom-card">
+        <div className="card-header">
+          <div className="study-icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M19 4H5C3.89543 4 3 4.89543 3 6V20C3 21.1046 3.89543 22 5 22H19C20.1046 22 21 21.1046 21 20V6C21 4.89543 20.1046 4 19 4Z" stroke="currentColor" strokeWidth="2"/>
+              <path d="M16 2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M8 2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M3 10H21" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M8 14H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M8 18H12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
           </div>
+          <h2>Create Study Room</h2>
+          <p className="card-subtitle">Set up your perfect study environment</p>
+        </div>
 
-          {/* Message Input */}
-          <form onSubmit={sendMessage} style={{ 
-            padding: "15px",
-            borderTop: "1px solid #e0e0e0",
-            backgroundColor: "white"
-          }}>
-            <div style={{ display: "flex", gap: "10px", alignItems: "flex-end" }}>
-              <div style={{ flex: 1, position: "relative" }}>
-                <textarea
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="Type a message..."
-                  rows="1"
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    border: "1px solid #ddd",
-                    borderRadius: "20px",
-                    resize: "none",
-                    fontSize: "0.9rem",
-                    fontFamily: "inherit",
-                    minHeight: "40px",
-                    maxHeight: "100px",
-                    outline: "none",
-                    transition: "border-color 0.2s"
-                  }}
-                  onInput={(e) => {
-                    e.target.style.height = "auto";
-                    e.target.style.height = e.target.scrollHeight + "px";
-                  }}
+        <div className="card-body">
+          {error && <div className="alert alert-error">{error}</div>}
+          {success && <div className="alert alert-success">{success}</div>}
+          
+          <form onSubmit={handleSubmit} className="studyroom-form">
+            <div className="input-group">
+              <div className="input-icon">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M11 4H4C3.46957 4 2.96086 4.21071 2.58579 4.58579C2.21071 4.96086 2 5.46957 2 6V20C2 20.5304 2.21071 21.0391 2.58579 21.4142C2.96086 21.7893 3.46957 22 4 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M18.5 2.5C18.8978 2.10217 19.4374 1.87868 20 1.87868C20.5626 1.87868 21.1022 2.10217 21.5 2.5C21.8978 2.89782 22.1213 3.43739 22.1213 4C22.1213 4.56261 21.8978 5.10217 21.5 5.5L12 15L8 16L9 12L18.5 2.5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <input
+                type="text"
+                placeholder="Room Name"
+                name="name"
+                value={formData.name}
+                onChange={handleChange}
+                required
+                className="modern-input"
+              />
+            </div>
+
+            <div className="input-group">
+              <div className="input-icon textarea-icon">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M14 2V8H20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M16 13H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M16 17H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <textarea
+                placeholder="Room Description (optional)"
+                name="description"
+                value={formData.description}
+                onChange={handleChange}
+                className="modern-textarea"
+              />
+            </div>
+
+            <div className="checkbox-wrapper">
+              <input
+                type="checkbox"
+                name="isPrivate"
+                checked={formData.isPrivate}
+                onChange={handleChange}
+                className="modern-checkbox"
+                id="private-room"
+              />
+              <label htmlFor="private-room" className="checkbox-label">
+                Make this a private room
+              </label>
+            </div>
+
+            {formData.isPrivate && (
+              <div className="input-group">
+                <div className="input-icon">
+                  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="3" y="11" width="18" height="11" rx="2" stroke="currentColor" strokeWidth="2"/>
+                    <path d="M7 11V7C7 4.23858 9.23858 2 12 2C14.7614 2 17 4.23858 17 7V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </div>
+                <input
+                  type="password"
+                  placeholder="Set a 4-digit PIN"
+                  name="pin"
+                  value={formData.pin}
+                  onChange={handleChange}
+                  required={formData.isPrivate}
+                  className="modern-input"
                 />
               </div>
-              <button 
-                type="submit"
-                disabled={!newMessage.trim() || !isConnected}
-                style={{
-                  backgroundColor: newMessage.trim() && isConnected ? "#007bff" : "#ccc",
-                  color: "white",
-                  border: "none",
-                  padding: "10px 16px",
-                  borderRadius: "20px",
-                  cursor: newMessage.trim() && isConnected ? "pointer" : "not-allowed",
-                  fontSize: "0.9rem",
-                  fontWeight: "500",
-                  transition: "background-color 0.2s"
-                }}
-              >
-                Send
-              </button>
+            )}
+
+            <div className="input-group">
+              <div className="input-icon">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20 21C20 19.6044 20 18.9067 19.8278 18.3389C19.44 17.0605 18.4395 16.06 17.1611 15.6722C16.5933 15.5 15.8956 15.5 14.5 15.5H9.5C8.10444 15.5 7.40665 15.5 6.83886 15.6722C5.56045 16.06 4.56004 17.0605 4.17224 18.3389C4 18.9067 4 19.6044 4 21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M12 11.5C14.2091 11.5 16 9.70914 16 7.5C16 5.29086 14.2091 3.5 12 3.5C9.79086 3.5 8 5.29086 8 7.5C8 9.70914 9.79086 11.5 12 11.5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <input
+                type="number"
+                placeholder="Max Participants"
+                name="capacity"
+                min="1"
+                max="40"
+                value={formData.capacity}
+                onChange={handleChange}
+                className="modern-input"
+              />
             </div>
+
+            <button type="submit" className="modern-button">
+              <span>Create Study Room</span>
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 4V20M12 4L8 8M12 4L16 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
           </form>
         </div>
 
-        {/* Members Sidebar */}
-        <div style={{ 
-          flex: 1,
-          minWidth: "150px",
-          maxWidth: "200px",
-          borderLeft: "1px solid #e0e0e0",
-          backgroundColor: "#f8f9fa",
-          padding: "15px",
-          overflowY: "auto"
-        }}>
-          <h4 style={{ 
-            margin: "0 0 12px 0", 
-            fontSize: "0.9rem",
-            color: "#666"
-          }}>
-            Members
-          </h4>
-          <div style={{ fontSize: "0.8rem" }}>
-            {roomMembers.map((member, index) => (
-              <div 
-                key={index} 
-                style={{ 
-                  display: "flex", 
-                  alignItems: "center", 
-                  marginBottom: "8px",
-                  padding: "4px 0"
-                }}
-              >
-                <div style={{
-                  width: "8px",
-                  height: "8px",
-                  borderRadius: "50%",
-                  backgroundColor: member.online ? "#4CAF50" : "#ccc",
-                  marginRight: "8px",
-                  flexShrink: 0
-                }}></div>
-                <span 
-                  style={{ 
-                    fontWeight: member.online ? "600" : "400",
-                    color: member.online ? "#333" : "#999"
-                  }}
-                  title={member.online ? "Online" : "Offline"}
-                >
-                  {member.username}
-                  {member.userId === currentUser?.id && " (You)"}
-                </span>
-              </div>
-            ))}
-          </div>
+        <div className="card-footer">
+          <p>Want to join a room instead? <a href="/join-room" className="footer-link">Join Room</a></p>
         </div>
       </div>
-
-      {/* CSS Animation */}
-      <style>
-        {`
-          @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(5px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
-        `}
-      </style>
     </div>
   );
-};
+}
 
-export default ChatBox;
+export default CreateRoom;
